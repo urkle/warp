@@ -280,6 +280,88 @@ pub fn param<T: FromStr + Send + 'static>(
     })
 }
 
+/// Extract a segment series from a path segment.
+///
+/// This will extract a Vec<String> from the path based on a function.
+/// The input is the current tail. And the return value is (Vec<>, u32).
+/// The u32 is the number of segments to consume in the route segments.
+///
+/// If the value could not be parsed, rejects with a `404 Not Found`.
+///
+/// # Example
+///
+/// ```
+/// use warp::Filter;
+///
+/// let route = warp::path::match_segments(|tail: Vec<String>| {
+///         (tail[0..1].to_vec(), 2)
+///     })
+///     .map(|pieces: dyn Iterator<Item = &str>| {
+///         format!("You found /{}", pieces)
+///     });
+/// ```
+pub fn match_segments<F>(
+    fun: F,
+) -> impl Filter<Extract = One<Vec<String>>, Error = Rejection> + Copy
+where
+    F: FnOnce(&mut RoutePathIterator) -> (usize, Vec<String>) + Copy,
+{
+    filter_fn(move |route| {
+        let mut parts = RoutePathIterator::new(route.path());
+        let (skip, extracted) = fun(&mut parts);
+        parts.set_unmatched(route, skip);
+        future::ok((extracted,))
+    })
+    // filter_segment(|seg| {
+    //     let seg = percent_decode_str(seg).decode_utf8().map_err(|_| reject::invalid_encoded_url())?;
+    //     tracing::trace!("param?: {:?}", seg);
+    //     if seg.is_empty() {
+    //         return Err(reject::not_found());
+    //     }
+    //     T::from_str(seg.as_ref()).map(one).map_err(|_| reject::not_found())
+    // })
+}
+
+/// iterator struct to walk through the tail path components and decoding them as we go
+// TODO figure out how to implement this using Cow to reduce copies
+#[allow(missing_debug_implementations)]
+pub struct RoutePathIterator {
+    pieces: Vec<String>,
+    index: usize,
+}
+
+impl RoutePathIterator {
+    fn new<T: AsRef<str>>(path: T) -> Self {
+        let path = path.as_ref();
+        let pieces = path.split('/').map(|s| s.to_string()).collect();
+        RoutePathIterator { pieces, index: 0 }
+    }
+
+    fn set_unmatched(&self, route: &mut Route, skip: usize) {
+        self.pieces.iter().take(skip).for_each(|piece| {
+            route.set_unmatched_path(piece.len());
+        })
+    }
+}
+
+impl Iterator for RoutePathIterator {
+    type Item = String;
+
+    fn next<'a>(&mut self) -> Option<Self::Item> {
+        match self.pieces.get(self.index) {
+            Some(piece) => {
+                self.index = self.index + 1;
+                let res = percent_decode_str(piece)
+                    .decode_utf8()
+                    .ok()
+                    .map(|e| e.to_string());
+                res
+            }
+            None => None,
+        }
+    }
+}
+
 /// Extract the unmatched tail of the path.
 ///
 /// This will return a `Tail`, which allows access to the rest of the path

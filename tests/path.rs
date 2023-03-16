@@ -3,6 +3,7 @@
 extern crate warp;
 
 use futures_util::future;
+use warp::path::Tail;
 use warp::Filter;
 
 #[tokio::test]
@@ -46,6 +47,13 @@ async fn param() {
     let req = warp::test::request().path("/warp%20speed");
     assert_eq!(req.filter(&s).await.unwrap(), "warp speed");
 
+    // % encoding nested
+    let req = warp::test::request().path("/warp%20speed/30");
+    assert_eq!(
+        req.filter(&(s.and(num))).await.unwrap(),
+        ("warp speed".to_string(), 30)
+    );
+
     // % encoding as int
     let req = warp::test::request().path("/%35%30");
     assert_eq!(req.filter(&num).await.unwrap(), 50);
@@ -68,6 +76,68 @@ async fn param() {
     assert!(
         !req.matches(&s).await,
         "param should never match an empty segment"
+    );
+}
+
+#[tokio::test]
+async fn match_segments() {
+    let _ = pretty_env_logger::try_init();
+
+    let simple = warp::path::match_segments(|iter| {
+        let mut ret = Vec::new();
+        ret.push(iter.next().unwrap());
+        (ret.len(), ret)
+    })
+    .and(warp::path::tail())
+    .map(|m, t: Tail| (m, t.as_str().to_string()));
+
+    let req = warp::test::request().path("/one/two/three");
+    assert_eq!(
+        req.filter(&simple).await.unwrap(),
+        (vec!["one".to_string()], "two/three".to_string())
+    );
+
+    let until_blob = warp::path::match_segments(|iter| {
+        let mut ret = Vec::new();
+        while let Some(piece) = iter.next() {
+            if piece == "blob" {
+                break;
+            }
+            ret.push(piece);
+        }
+        (ret.len(), ret)
+    })
+    .and(warp::path::path("blob"))
+    .and(warp::path::param::<String>());
+
+    let req = warp::test::request().path("/one/blob/identifier");
+    assert_eq!(
+        req.filter(&until_blob).await.unwrap(),
+        (vec!["one".to_string()], "identifier".to_string())
+    );
+
+    let req = warp::test::request().path("/one/blob/identifier");
+    assert_eq!(
+        req.filter(&until_blob).await.unwrap(),
+        (vec!["one".to_string()], "identifier".to_string())
+    );
+
+    let req = warp::test::request().path("/one/two/blob/identifier");
+    assert_eq!(
+        req.filter(&until_blob).await.unwrap(),
+        (
+            vec!["one".to_string(), "two".to_string()],
+            "identifier".to_string()
+        )
+    );
+
+    let req = warp::test::request().path("/one%20two/three/blob/identifier%20more");
+    assert_eq!(
+        req.filter(&until_blob).await.unwrap(),
+        (
+            vec!["one two".to_string(), "three".to_string()],
+            "identifier more".to_string()
+        )
     );
 }
 
